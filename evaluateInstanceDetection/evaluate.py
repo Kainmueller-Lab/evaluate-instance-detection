@@ -6,6 +6,7 @@ import h5py
 import numpy as np
 import pymrt as mrt
 import pymrt.geometry
+import scipy.ndimage
 import scipy.spatial
 import toml
 import zarr
@@ -25,8 +26,15 @@ def evaluate_file(**kwargs):
     else:
         raise NotImplementedError("invalid pred format")
     raw = np.array(input_file['/volumes/raw_cropped'])
-    reg_max = np.squeeze(np.array(input_file['/volumes/markers']), axis=0)
-    pred_cells = np.argwhere(reg_max > 0)
+    if kwargs.get('sparse', False):
+        reg_max = np.squeeze(np.array(input_file['/volumes/markers']), axis=0)
+        pred_cells = np.argwhere(reg_max > 0)
+    else:
+        labeling = np.squeeze(np.array(input_file[kwargs['res_key']]),
+                              axis=0)
+        pred_cells = np.array(scipy.ndimage.measurements.center_of_mass(
+            labeling > 0,
+            labeling, sorted(list(np.unique(labeling)))[1:]))
     logger.info("%s: number pred cells: %s", sample_pred, pred_cells.shape)
 
     # load gt image
@@ -193,10 +201,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--res_file', type=str,
                         help='path to res_file', required=True)
+    parser.add_argument('--res_key', type=str,
+                        help='name res key')
     parser.add_argument('--gt_file', type=str,
                         help='path to gt_file', required=True)
     parser.add_argument('--gt_key', type=str,
-                        help='name gt hdf key')
+                        help='name gt key')
     parser.add_argument('--out_dir', type=str,
                         help='output directory', required=True)
     parser.add_argument('--distance_limit', type=int, default=3)
@@ -204,6 +214,8 @@ if __name__ == "__main__":
                         help='label for background (use -1 for None)',
                         default="0")
     parser.add_argument("--use_gt_fg", help="",
+                    action="store_true")
+    parser.add_argument("--sparse", help="center point blobs or dense seg",
                     action="store_true")
     parser.add_argument("--debug", help="",
                     action="store_true")
