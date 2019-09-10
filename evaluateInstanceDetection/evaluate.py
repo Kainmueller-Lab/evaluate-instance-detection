@@ -4,9 +4,10 @@ import os
 
 import h5py
 import numpy as np
-import pymrt as mrt
-import pymrt.geometry
+# import pymrt as mrt
+# import pymrt.geometry
 import scipy.ndimage
+from scipy.optimize import linear_sum_assignment
 import scipy.spatial
 import toml
 import zarr
@@ -72,6 +73,8 @@ def evaluate_file(**kwargs):
     outFnBase = os.path.join(
         kwargs['out_dir'],
         os.path.splitext(os.path.basename(kwargs['res_file']))[0] + "_scores")
+    if kwargs.get('use_linear_sum_assignment'):
+        outFnBase += "_linear"
     if len(glob.glob(outFnBase + "*")) > 0:
         logger.info('Skipping evaluation for %s. Already exists!',
                     kwargs['res_file'])
@@ -80,15 +83,75 @@ def evaluate_file(**kwargs):
 
     tomlFl = open(outFnBase + ".toml", 'w')
     results = {}
-    res = computeMetrics(raw, gt_cells, pred_cells,
-                         gt_labels, gt_labels_debug,
-                         draw=kwargs['debug'], **kwargs)
-    results['gt_pred'] = res
-    res = computeMetrics(raw, pred_cells, gt_cells,
-                         gt_labels, gt_labels_debug,
-                         draw=False, reverse=True, **kwargs)
-    results['pred_gt'] = res
+
+    if kwargs.get('use_linear_sum_assignment'):
+        res = compute_linear_sum_assignment(gt_cells, pred_cells,
+                                            gt_labels, **kwargs)
+        results['lin_sum_assign'] = res
+    else:
+        res = computeMetrics(raw, gt_cells, pred_cells,
+                             gt_labels, gt_labels_debug,
+                             draw=kwargs['debug'], **kwargs)
+        results['gt_pred'] = res
+        res = computeMetrics(raw, pred_cells, gt_cells,
+                             gt_labels, gt_labels_debug,
+                             draw=False, reverse=True, **kwargs)
+        results['pred_gt'] = res
     toml.dump(results, tomlFl)
+    return results
+
+
+def compute_linear_sum_assignment(gt_cells, pred_cells, gt_labels, **kwargs):
+    costMat = np.zeros((len(gt_cells), len(pred_cells)), dtype=np.float32)
+    distance_limit = kwargs.get('distance_limit', 9999)
+    costMat[:,:] = distance_limit
+
+    gt_cells_tree = scipy.spatial.cKDTree(gt_cells, leafsize=4)
+    nn_distances, nn_locations = gt_cells_tree.query(pred_cells, k=5)
+    for dists, gIDs, pID in zip(nn_distances, nn_locations,
+                                range(pred_cells.shape[0])):
+        for d, gID in zip(dists, gIDs):
+            if d < distance_limit:
+                costMat[gID, pID] = d
+
+    pred_cells_tree = scipy.spatial.cKDTree(pred_cells, leafsize=4)
+    nn_distances, nn_locations = pred_cells_tree.query(gt_cells, k=5)
+    for dists, pIDs, gID in zip(nn_distances, nn_locations,
+                                range(gt_cells.shape[0])):
+        for d, pID in zip(dists, pIDs):
+            if d < distance_limit:
+                if costMat[gID, pID] != distance_limit:
+                    assert abs(costMat[gID, pID] - d) <= 0.001, \
+                        "non matching dist {} {}".format(costMat[gID, pID], d)
+                costMat[gID, pID] = d
+
+    gt_inds, pred_inds = linear_sum_assignment(costMat)
+    tp = 0
+    for gID, pID in zip(gt_inds, pred_inds):
+        if gt_labels[int(round(pred_cells[pID][0])),
+                  int(round(pred_cells[pID][1])),
+                  int(round(pred_cells[pID][2]))] == \
+            gt_labels[int(round(gt_cells[gID][0])),
+                      int(round(gt_cells[gID][1])),
+                      int(round(gt_cells[gID][2]))]:
+            tp += 1
+    fp = len(pred_cells) - tp
+    fn = len(gt_cells) - tp
+
+    results = {}
+    results['Num_GT'] = len(gt_cells)
+    results['Num_Pred'] = len(pred_cells)
+    results['TP'] = tp
+    results['FP'] = fp
+    results['FN'] = fn
+
+    apDef = tp / (tp + fn + fp)
+    results['AP'] = apDef
+    logger.debug("AP: %s", results['AP'])
+    apSD = tp / (tp+fp)
+    results['AP_CV'] = apSD
+    logger.debug("AP_CV: %s", results['AP_CV'])
+
     return results
 
 
