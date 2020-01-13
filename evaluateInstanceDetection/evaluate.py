@@ -26,17 +26,22 @@ def evaluate_file(**kwargs):
         input_file = h5py.File(kwargs['res_file'], 'r')
     else:
         raise NotImplementedError("invalid pred format")
-    raw = np.array(input_file['/volumes/raw_cropped'])
     if kwargs.get('sparse', False):
         reg_max = np.squeeze(np.array(input_file['/volumes/markers']), axis=0)
         pred_cells = np.argwhere(reg_max > 0)
     else:
         labeling = np.squeeze(np.array(input_file[kwargs['res_key']]),
                               axis=0)
+        # seeds = np.array(input_file[kwargs['res_key']])
+        # labeling, cnt = scipy.ndimage.label(seeds)
         pred_cells = np.array(scipy.ndimage.measurements.center_of_mass(
             labeling > 0,
             labeling, sorted(list(np.unique(labeling)))[1:]))
     logger.info("%s: number pred cells: %s", sample_pred, pred_cells.shape)
+
+    if pred_cells.shape[0] == 0:
+        logger.error("no predicted cells found, aborting..")
+        return None
 
     # load gt image
     sample_gt = os.path.basename(kwargs['gt_file'])
@@ -69,76 +74,124 @@ def evaluate_file(**kwargs):
     else:
         gt_labels_debug = None
 
+    if pred_cells.shape[0] > gt_cells.shape[0] * 10:
+        logger.error("far too many predicted cells, aborting.. ({} vs {})".format(
+            pred_cells.shape[0], gt_cells.shape[0]))
+        return None
 
+    detection_fn = kwargs.get('detection', 'greedy')
     outFnBase = os.path.join(
         kwargs['out_dir'],
         os.path.splitext(os.path.basename(kwargs['res_file']))[0] + "_scores")
-    if kwargs.get('use_linear_sum_assignment'):
+    if detection_fn == "linear" or detection_fn == "hungarian":
         outFnBase += "_linear"
-    if len(glob.glob(outFnBase + "*")) > 0:
-        logger.info('Skipping evaluation for %s. Already exists!',
-                    kwargs['res_file'])
-        tomlFl = open(outFnBase+".toml", 'r')
-        return toml.load(tomlFl)
+    elif detection_fn == "greedy":
+        outFnBase += "_greedy"
+    elif detection_fn == "hoefener":
+        outFnBase += "_hoefener"
+    if not kwargs.get("from_scratch") and len(glob.glob(outFnBase + "*")) > 0:
+        with open(outFnBase+".toml", 'r') as tomlFl:
+            metrics = toml.load(tomlFl)
+        if kwargs.get('metric', None) is None:
+            return metrics
+        try:
+            metric = metrics
+            for k in kwargs['metric'].split('.'):
+                metric = metric[k]
+            logger.info('Skipping evaluation for %s. Already exists!',
+                        kwargs['res_file'])
+            return metrics
+        except KeyError:
+            logger.info('Error (key %s missing) in existing evaluation for %s. Recomputing!',
+                        kwargs['metric'], kwargs['res_file'])
 
     tomlFl = open(outFnBase + ".toml", 'w')
     results = {}
 
-    if kwargs.get('use_linear_sum_assignment'):
+    if detection_fn == "linear" or detection_fn == "hungarian":
         res = compute_linear_sum_assignment(gt_cells, pred_cells,
                                             gt_labels, **kwargs)
-        results['lin_sum_assign'] = res
-    else:
-        res = computeMetrics(raw, gt_cells, pred_cells,
+        results['confusion_matrix'] = res
+    elif detection_fn == "greedy":
+        results['confusion_matrix'] = {}
+        res = computeMetrics(gt_cells, pred_cells,
                              gt_labels, gt_labels_debug,
                              draw=kwargs['debug'], **kwargs)
-        results['gt_pred'] = res
-        res = computeMetrics(raw, pred_cells, gt_cells,
+        results['confusion_matrix']['gt_pred'] = res
+        res = computeMetrics(pred_cells, gt_cells,
                              gt_labels, gt_labels_debug,
                              draw=False, reverse=True, **kwargs)
-        results['pred_gt'] = res
+        results['confusion_matrix']['pred_gt'] = res
+    elif detection_fn == "hoefener":
+        results['confusion_matrix'] = {}
+        res = computeMetricsH(gt_cells, pred_cells,
+                              gt_labels, **kwargs)
+        results['confusion_matrix']['hoefener'] = res
+    else:
+        raise RuntimeError("invalid detection method")
     toml.dump(results, tomlFl)
     return results
 
 
 def compute_linear_sum_assignment(gt_cells, pred_cells, gt_labels, **kwargs):
     costMat = np.zeros((len(gt_cells), len(pred_cells)), dtype=np.float32)
-    distance_limit = kwargs.get('distance_limit', 9999)
-    costMat[:,:] = distance_limit
+    distance_limit = kwargs.get('distance_limit', 10)
+    out_of_range = distance_limit
+    costMat[:,:] = out_of_range
 
+    # costMat = scipy.spatial.distance.cdist(gt_cells, pred_cells)
     gt_cells_tree = scipy.spatial.cKDTree(gt_cells, leafsize=4)
-    nn_distances, nn_locations = gt_cells_tree.query(pred_cells, k=5)
-    for dists, gIDs, pID in zip(nn_distances, nn_locations,
+    nn_distances_p, nn_locations_p = gt_cells_tree.query(
+        pred_cells, k=5000)
+        # distance_upper_bound=distance_limit)
+    for dists, gIDs, pID in zip(nn_distances_p, nn_locations_p,
                                 range(pred_cells.shape[0])):
+        # dists = [dists]
+        # gIDs = [gIDs]
+        # print(dists)
         for d, gID in zip(dists, gIDs):
-            if d < distance_limit:
+            if d != np.inf:
                 costMat[gID, pID] = d
 
     pred_cells_tree = scipy.spatial.cKDTree(pred_cells, leafsize=4)
-    nn_distances, nn_locations = pred_cells_tree.query(gt_cells, k=5)
-    for dists, pIDs, gID in zip(nn_distances, nn_locations,
+    nn_distances_g, nn_locations_g = pred_cells_tree.query(
+        gt_cells, k=5000)
+        # distance_upper_bound=distance_limit)
+    for dists, pIDs, gID in zip(nn_distances_g, nn_locations_g,
                                 range(gt_cells.shape[0])):
+        # dists = [dists]
+        # pIDs = [pIDs]
+        # print(dists)
         for d, pID in zip(dists, pIDs):
-            if d < distance_limit:
-                if costMat[gID, pID] != distance_limit:
-                    assert abs(costMat[gID, pID] - d) <= 0.001, \
-                        "non matching dist {} {}".format(costMat[gID, pID], d)
+            if d != np.inf:
                 costMat[gID, pID] = d
 
     gt_inds, pred_inds = linear_sum_assignment(costMat)
     tp = 0
     for gID, pID in zip(gt_inds, pred_inds):
-        if gt_labels[int(round(pred_cells[pID][0])),
-                  int(round(pred_cells[pID][1])),
-                  int(round(pred_cells[pID][2]))] == \
-            gt_labels[int(round(gt_cells[gID][0])),
-                      int(round(gt_cells[gID][1])),
-                      int(round(gt_cells[gID][2]))]:
+        # print(nn_distances_g[gID], nn_distances_p[pID])
+        # logger.info("gt: %s   pred: %s   (dist: %s) %s %s",
+        #             [int(c) for c in gt_cells[gID]], pred_cells[pID], costMat[gID, pID],
+        #             gt_labels[int(round(pred_cells[pID][0])),
+        #                       int(round(pred_cells[pID][1])),
+        #                       int(round(pred_cells[pID][2]))],
+        #             gt_labels[int(round(gt_cells[gID][0])),
+        #                       int(round(gt_cells[gID][1])),
+        #                       int(round(gt_cells[gID][2]))])
+        if costMat[gID, pID] < distance_limit and (
+                costMat[gID, pID] < 3 or \
+                gt_labels[int(round(pred_cells[pID][0])),
+                          int(round(pred_cells[pID][1])),
+                          int(round(pred_cells[pID][2]))] == \
+                gt_labels[int(round(gt_cells[gID][0])),
+                          int(round(gt_cells[gID][1])),
+                          int(round(gt_cells[gID][2]))]):
             tp += 1
     fp = len(pred_cells) - tp
     fn = len(gt_cells) - tp
 
     results = {}
+    results['Num_Matches'] = len(gt_inds)
     results['Num_GT'] = len(gt_cells)
     results['Num_Pred'] = len(pred_cells)
     results['TP'] = tp
@@ -155,12 +208,12 @@ def compute_linear_sum_assignment(gt_cells, pred_cells, gt_labels, **kwargs):
     return results
 
 
-def computeMetrics(raw, source_cells, target_cells,
+def computeMetrics(source_cells, target_cells,
                    gt_labels, gt_labels_debug,
                    draw=False, reverse=False, **kwargs):
     source_cells_tree = scipy.spatial.cKDTree(source_cells, leafsize=4)
 
-    nn_distances, nn_locations = source_cells_tree.query(target_cells)
+    nn_distances, nn_locations = source_cells_tree.query(target_cells, k=1)
 
     fpP = 0
     fnGT = 0
@@ -169,8 +222,6 @@ def computeMetrics(raw, source_cells, target_cells,
     nsP = 0
     fsGT = 0
     fn = 0
-    # gt_labels_matched_num = {}
-
 
     cntsSource = np.zeros(source_cells.shape[0], dtype=np.uint16)
     cntsTarget = np.zeros(target_cells.shape[0], dtype=np.uint16)
@@ -183,33 +234,18 @@ def computeMetrics(raw, source_cells, target_cells,
         if sID < source_cells.shape[0]:
             logger.debug("%s %s %s", dist, source_cells[sID],
                          target_cells[tID])
-            # if within distance and same label
-            if dist < kwargs['distance_limit'] and \
-               gt_labels[int(round(target_cells[tID][0])),
+            # if same label
+            if gt_labels[int(round(target_cells[tID][0])),
                          int(round(target_cells[tID][1])),
                          int(round(target_cells[tID][2]))] == \
                gt_labels[int(round(source_cells[sID][0])),
                          int(round(source_cells[sID][1])),
                          int(round(source_cells[sID][2]))]:
-                l = gt_labels[int(round(target_cells[tID][0])),
-                              int(round(target_cells[tID][1])),
-                              int(round(target_cells[tID][2]))]
-                # TODO: check
-                # if l in gt_labels_matched_num:
-                #     gt_labels_matched_num[l] += 1
-                # else:
-                #     gt_labels_matched_num[l] = 1
                 cntsSource[sID] += 1
                 cntsTarget[tID] += 1
-                # colID = 0
-            else:
-                fpP += 1
-                # colID = 1
-
-
         else:
             logger.debug("no neighbor for %s", sID)
-            fpP += 1
+            # fpP += 1
 
     results = {}
     if reverse:
@@ -256,6 +292,114 @@ def computeMetrics(raw, source_cells, target_cells,
     apSD = tpP / (tpP+fpP)
     results['AP_CV'] = apSD
     logger.debug("AP_CV: %s", results['AP_CV'])
+
+    return results
+
+
+def computeMetricsH(gt_cells, pred_cells,
+                    gt_labels, **kwargs):
+    distance_limit = kwargs.get('distance_limit', 6)
+
+    gt_cells_tree = scipy.spatial.cKDTree(gt_cells, leafsize=4)
+    nn_distancesP, nn_locationsP = gt_cells_tree.query(pred_cells, k=1)
+
+    fp = 0
+    fn = 0
+    tp = 0
+    matchesGT = {}
+    for dist, gtID, pID in zip(nn_distancesP, nn_locationsP,
+                               range(pred_cells.shape[0])):
+        if kwargs['debug'] and gtID >= 20:
+            break
+        logger.debug("checking nearest neighbor pred cell: %s", pID)
+        if gtID < gt_cells.shape[0]:
+            logger.debug("%s %s %s", dist, gt_cells[gtID],
+                         pred_cells[pID])
+            # if within distance and same label
+            # if dist < distance_limit and \
+            if gt_labels[int(round(pred_cells[pID][0])),
+                         int(round(pred_cells[pID][1])),
+                         int(round(pred_cells[pID][2]))] == \
+               gt_labels[int(round(gt_cells[gtID][0])),
+                         int(round(gt_cells[gtID][1])),
+                         int(round(gt_cells[gtID][2]))]:
+                matchesGT.setdefault(gtID, []).append(pID)
+            else:
+                fp += 1
+        else:
+            raise RuntimeError("shouldn't happen")
+            logger.debug("no neighbor for %s", gtID)
+
+    for gtID, pIDs in matchesGT.items():
+        tp += 1
+        if len(pIDs) > 1:
+            fp += len(pIDs) - 1
+    fn += len(gt_cells) - len(matchesGT)
+    results = {}
+
+    results['Num_GT'] = gt_cells.shape[0]
+    results['Num_Pred'] = pred_cells.shape[0]
+
+    logger.debug("Num GT: %s", results['Num_GT'])
+    logger.debug("Num Pred: %s", results['Num_Pred'])
+    results['TP'] = tp
+    logger.debug("TP: %s", results['TP'])
+    results['FN'] = fn
+    logger.debug("FN: %s", results['FN'])
+    results['FP'] = fp
+    logger.debug("FP: %s", results['FP'])
+
+    apDef = tp / (tp + fn + fp)
+    results['AP'] = apDef
+    logger.debug("AP: %s", results['AP'])
+    apSD = tp / (tp+fp)
+    results['AP_CV'] = apSD
+    logger.debug("AP_CV: %s", results['AP_CV'])
+
+    # reversed order
+    pred_cells_tree = scipy.spatial.cKDTree(pred_cells, leafsize=4)
+    nn_distancesGT, nn_locationsGT = pred_cells_tree.query(gt_cells, k=1)
+
+    fp = 0
+    fn = 0
+    tp = 0
+    matchesP = {}
+    for dist, pID, gtID in zip(nn_distancesGT, nn_locationsGT,
+                               range(gt_cells.shape[0])):
+        if kwargs['debug'] and pID >= 20:
+            break
+        logger.debug("checking nearest neighbor gt cell: %s", gtID)
+        if pID < pred_cells.shape[0]:
+            logger.debug("%s %s %s", dist, pred_cells[pID],
+                         gt_cells[gtID])
+            # if within distance and same label
+            # if dist < distance_limit and \
+            if gt_labels[int(round(pred_cells[pID][0])),
+                         int(round(pred_cells[pID][1])),
+                         int(round(pred_cells[pID][2]))] == \
+               gt_labels[int(round(gt_cells[gtID][0])),
+                         int(round(gt_cells[gtID][1])),
+                         int(round(gt_cells[gtID][2]))]:
+                matchesP.setdefault(pID, []).append(gtID)
+            else:
+                fn += 1
+        else:
+            raise RuntimeError("shouldn't happen")
+            logger.debug("no neighbor for %s", pID)
+
+    for pID, gtIDs in matchesP.items():
+        tp += 1
+        if len(gtIDs) > 1:
+            fn += len(gtIDs) - 1
+    fp += len(pred_cells) - len(matchesP)
+    results['TP_rev'] = tp
+    results['FN_rev'] = fn
+    results['FP_rev'] = fp
+
+    apDef = tp / (tp + fn + fp)
+    results['AP_rev'] = apDef
+    apSD = tp / (tp+fp)
+    results['AP_CV_rev'] = apSD
 
     return results
 
