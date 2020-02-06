@@ -434,7 +434,7 @@ if __name__ == "__main__":
     parser.add_argument("--debug", help="",
                         action="store_true")
     parser.add_argument("--no_sparse",
-                        help="work on segmentations (computes center of mass and uses that as detection)",
+                        help="work on segmentation predictions (computes center of mass and uses that as detection)",
                         dest='sparse',
                         action="store_false")
 
