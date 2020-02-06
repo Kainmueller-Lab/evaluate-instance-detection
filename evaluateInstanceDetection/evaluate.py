@@ -1,11 +1,10 @@
+import argparse
 import logging
 import glob
 import os
 
 import h5py
 import numpy as np
-# import pymrt as mrt
-# import pymrt.geometry
 import scipy.ndimage
 from scipy.optimize import linear_sum_assignment
 import scipy.spatial
@@ -125,7 +124,7 @@ def evaluate_file(**kwargs):
     elif detection_fn == "hoefener":
         results['confusion_matrix'] = {}
         res = computeMetricsH(gt_cells, pred_cells,
-                              gt_labels, **kwargs)
+                              gt_labels, outFnBase, **kwargs)
         results['confusion_matrix']['hoefener'] = res
     else:
         raise RuntimeError("invalid detection method")
@@ -297,7 +296,7 @@ def computeMetrics(source_cells, target_cells,
 
 
 def computeMetricsH(gt_cells, pred_cells,
-                    gt_labels, **kwargs):
+                    gt_labels, outFn, **kwargs):
     distance_limit = kwargs.get('distance_limit', 6)
 
     gt_cells_tree = scipy.spatial.cKDTree(gt_cells, leafsize=4)
@@ -408,31 +407,39 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--res_file', type=str,
                         help='path to res_file', required=True)
+    parser.add_argument('--res_file_suffix', type=str,
+                        help='res_file suffix (deprecated)')
     parser.add_argument('--res_key', type=str,
-                        help='name res key')
+                        help='name labeling hdf key')
     parser.add_argument('--gt_file', type=str,
-                        help='path to gt_file', required=True)
+                        help='path to gt_file (hdf, gt segmentation, required csv companion file with center points of instances)', required=True)
     parser.add_argument('--gt_key', type=str,
-                        help='name gt key')
+                        help='name gt hdf key')
+    parser.add_argument('--padding', type=int,
+                        help='padding in hdf file (deprecated)')
     parser.add_argument('--out_dir', type=str,
                         help='output directory', required=True)
-    parser.add_argument('--distance_limit', type=int, default=3)
-    parser.add_argument('--background', type=int,
-                        help='label for background (use -1 for None)',
-                        default="0")
-    parser.add_argument("--use_gt_fg", help="",
-                    action="store_true")
-    parser.add_argument("--sparse", help="center point blobs or dense seg",
-                    action="store_true")
+    parser.add_argument('--metric', type=str,
+                        default="confusion_matrix.AP",
+                        help='check if this metric already has been computed in possibly existing result files')
+    parser.add_argument("--from_scratch",
+                        help="recompute everything (instead of checking if results are already there)",
+                        action="store_true")
+    parser.add_argument("--detection", type=str,
+                        help="which matching method to use (linear (Hungarian matching), greedy (greedily match both ways), hoefener (preferred, from: Deep learning nuclei detection: A simple approach can deliver state-of-the-art results))",
+                        action="store_true")
+    parser.add_argument("--distance_limit",
+                        help="distance limit to match gt and predicted detection (deprecated, only for linear matching)", type=int,
+                        default=10)
     parser.add_argument("--debug", help="",
-                    action="store_true")
+                        action="store_true")
+    parser.add_argument("--no_sparse",
+                        help="work on segmentations (computes center of mass and uses that as detection)",
+                        dest='sparse',
+                        action="store_false")
 
-    logger.debug("arguments %s",tuple(sys.argv))
     args = parser.parse_args()
     if args.use_gt_fg:
         logger.info("using gt foreground")
 
-    evaluate_file(res_file=args.res_file, gt_file=args.gt_file,
-                  foreground_only=args.use_gt_fg, background=args.background,
-                  gt_key=args.gt_key, out_dir=args.out_dir,
-                  distance_limit=args.distance_limit, debug=args.debug)
+    evaluate_file(vars(args))
