@@ -329,7 +329,11 @@ def computeMetricsH(gt_cells, pred_cells,
             raise RuntimeError("shouldn't happen")
             logger.debug("no neighbor for %s", gtID)
 
+    gtIDs_t = []
+    pIDs_t = []
     for gtID, pIDs in matchesGT.items():
+        pIDs_t.append(pIDs[0])
+        gtIDs_t.append(gtID)
         tp += 1
         if len(pIDs) > 1:
             fp += len(pIDs) - 1
@@ -400,6 +404,57 @@ def computeMetricsH(gt_cells, pred_cells,
     apSD = tp / (tp+fp)
     results['AP_CV_rev'] = apSD
 
+    if kwargs['visualize']:
+        vis_tp = np.zeros_like(gt_labels, dtype=np.float32)
+        vis_tp2 = np.zeros_like(gt_labels, dtype=np.float32)
+        vis_fp = np.zeros_like(gt_labels, dtype=np.float32)
+        vis_fn = np.zeros_like(gt_labels, dtype=np.float32)
+        for gti, pi, in zip(gtIDs_t, pIDs_t):
+            vis_tp[int(round(pred_cells[pi][0])),
+                   int(round(pred_cells[pi][1])),
+                   int(round(pred_cells[pi][2]))] = 1
+            vis_tp2[int(round(gt_cells[gti][0])),
+                    int(round(gt_cells[gti][1])),
+                    int(round(gt_cells[gti][2]))] = 1
+        for pi in range(len(pred_cells)):
+            if pi in pIDs_t:
+                continue
+            vis_fp[int(round(pred_cells[pi][0])),
+                   int(round(pred_cells[pi][1])),
+                   int(round(pred_cells[pi][2]))] = 1
+        for gti in range(len(gt_cells)):
+            if gti in gtIDs_t:
+                continue
+            vis_fn[int(round(gt_cells[gti][0])),
+                   int(round(gt_cells[gti][1])),
+                   int(round(gt_cells[gti][2]))] = 1
+        sz = 1
+        vis_tp = scipy.ndimage.gaussian_filter(vis_tp, sz, truncate=sz)
+        vis_fp = scipy.ndimage.gaussian_filter(vis_fp, sz, truncate=sz)
+        vis_fn = scipy.ndimage.gaussian_filter(vis_fn, sz, truncate=sz)
+        vis_tp2 = scipy.ndimage.gaussian_filter(vis_tp2, sz, truncate=sz)
+
+        vis_tp = vis_tp/np.max(vis_tp)
+        vis_fp = vis_fp/np.max(vis_fp)
+        vis_fn = vis_fn/np.max(vis_fn)
+        vis_tp2 = vis_tp2/np.max(vis_tp2)
+        with h5py.File(outFn + "_vis.hdf", 'w') as fi:
+            fi.create_dataset(
+                'volumes/vis_tp',
+                data=vis_tp,
+                compression='gzip')
+            fi.create_dataset(
+                'volumes/vis_tp2',
+                data=vis_tp2,
+                compression='gzip')
+            fi.create_dataset(
+                'volumes/vis_fp',
+                data=vis_fp,
+                compression='gzip')
+            fi.create_dataset(
+                'volumes/vis_fn',
+                data=vis_fn,
+                compression='gzip')
     return results
 
 
@@ -432,6 +487,8 @@ if __name__ == "__main__":
                         help="distance limit to match gt and predicted detection (deprecated, only for linear matching)", type=int,
                         default=10)
     parser.add_argument("--debug", help="",
+                        action="store_true")
+    parser.add_argument("--visualize", help="",
                         action="store_true")
     parser.add_argument("--no_sparse",
                         help="work on segmentation predictions (computes center of mass and uses that as detection)",
