@@ -26,13 +26,12 @@ def evaluate_file(**kwargs):
     else:
         raise NotImplementedError("invalid pred format")
     if kwargs.get('sparse', False):
-        reg_max = np.squeeze(np.array(input_file['/volumes/markers']), axis=0)
+        reg_max = np.squeeze(np.array(
+            input_file[kwargs.get('res_key', '/volumes/markers')]), axis=0)
         pred_cells = np.argwhere(reg_max > 0)
     else:
         labeling = np.squeeze(np.array(input_file[kwargs['res_key']]),
                               axis=0)
-        # seeds = np.array(input_file[kwargs['res_key']])
-        # labeling, cnt = scipy.ndimage.label(seeds)
         pred_cells = np.array(scipy.ndimage.measurements.center_of_mass(
             labeling > 0,
             labeling, sorted(list(np.unique(labeling)))[1:]))
@@ -65,7 +64,7 @@ def evaluate_file(**kwargs):
             z = float(z)-kwargs.get("padding", [0, 0, 0])[0]
             y = float(y)-kwargs.get("padding", [0, 0, 0])[1]
             x = float(x)-kwargs.get("padding", [0, 0, 0])[2]
-            gt_cells.append((z,y,x))
+            gt_cells.append((z, y, x))
     gt_cells = np.array(gt_cells)
     logger.info("%s: number gt cells: %s", sample_gt, gt_cells.shape)
     if kwargs['debug']:
@@ -74,8 +73,9 @@ def evaluate_file(**kwargs):
         gt_labels_debug = None
 
     if pred_cells.shape[0] > gt_cells.shape[0] * 10:
-        logger.error("far too many predicted cells, aborting.. ({} vs {})".format(
-            pred_cells.shape[0], gt_cells.shape[0]))
+        logger.error(
+            "far too many predicted cells, aborting.. ({} vs {})".format(
+                pred_cells.shape[0], gt_cells.shape[0]))
         return None
 
     detection_fn = kwargs.get('detection', 'greedy')
@@ -101,8 +101,9 @@ def evaluate_file(**kwargs):
                         kwargs['res_file'])
             return metrics
         except KeyError:
-            logger.info('Error (key %s missing) in existing evaluation for %s. Recomputing!',
-                        kwargs['metric'], kwargs['res_file'])
+            logger.info(
+                'Error (key %s missing) in exist. eval. for %s. Recomputing!',
+                kwargs['metric'], kwargs['res_file'])
 
     tomlFl = open(outFnBase + ".toml", 'w')
     results = {}
@@ -136,18 +137,14 @@ def compute_linear_sum_assignment(gt_cells, pred_cells, gt_labels, **kwargs):
     costMat = np.zeros((len(gt_cells), len(pred_cells)), dtype=np.float32)
     distance_limit = kwargs.get('distance_limit', 10)
     out_of_range = distance_limit
-    costMat[:,:] = out_of_range
+    costMat[:, :] = out_of_range
 
     # costMat = scipy.spatial.distance.cdist(gt_cells, pred_cells)
     gt_cells_tree = scipy.spatial.cKDTree(gt_cells, leafsize=4)
     nn_distances_p, nn_locations_p = gt_cells_tree.query(
         pred_cells, k=5000)
-        # distance_upper_bound=distance_limit)
     for dists, gIDs, pID in zip(nn_distances_p, nn_locations_p,
                                 range(pred_cells.shape[0])):
-        # dists = [dists]
-        # gIDs = [gIDs]
-        # print(dists)
         for d, gID in zip(dists, gIDs):
             if d != np.inf:
                 costMat[gID, pID] = d
@@ -155,12 +152,8 @@ def compute_linear_sum_assignment(gt_cells, pred_cells, gt_labels, **kwargs):
     pred_cells_tree = scipy.spatial.cKDTree(pred_cells, leafsize=4)
     nn_distances_g, nn_locations_g = pred_cells_tree.query(
         gt_cells, k=5000)
-        # distance_upper_bound=distance_limit)
     for dists, pIDs, gID in zip(nn_distances_g, nn_locations_g,
                                 range(gt_cells.shape[0])):
-        # dists = [dists]
-        # pIDs = [pIDs]
-        # print(dists)
         for d, pID in zip(dists, pIDs):
             if d != np.inf:
                 costMat[gID, pID] = d
@@ -168,20 +161,11 @@ def compute_linear_sum_assignment(gt_cells, pred_cells, gt_labels, **kwargs):
     gt_inds, pred_inds = linear_sum_assignment(costMat)
     tp = 0
     for gID, pID in zip(gt_inds, pred_inds):
-        # print(nn_distances_g[gID], nn_distances_p[pID])
-        # logger.info("gt: %s   pred: %s   (dist: %s) %s %s",
-        #             [int(c) for c in gt_cells[gID]], pred_cells[pID], costMat[gID, pID],
-        #             gt_labels[int(round(pred_cells[pID][0])),
-        #                       int(round(pred_cells[pID][1])),
-        #                       int(round(pred_cells[pID][2]))],
-        #             gt_labels[int(round(gt_cells[gID][0])),
-        #                       int(round(gt_cells[gID][1])),
-        #                       int(round(gt_cells[gID][2]))])
         if costMat[gID, pID] < distance_limit and (
-                costMat[gID, pID] < 3 or \
+                costMat[gID, pID] < 3 or
                 gt_labels[int(round(pred_cells[pID][0])),
                           int(round(pred_cells[pID][1])),
-                          int(round(pred_cells[pID][2]))] == \
+                          int(round(pred_cells[pID][2]))] ==
                 gt_labels[int(round(gt_cells[gID][0])),
                           int(round(gt_cells[gID][1])),
                           int(round(gt_cells[gID][2]))]):
@@ -220,13 +204,12 @@ def computeMetrics(source_cells, target_cells,
     tpGT = 0
     nsP = 0
     fsGT = 0
-    fn = 0
 
     cntsSource = np.zeros(source_cells.shape[0], dtype=np.uint16)
     cntsTarget = np.zeros(target_cells.shape[0], dtype=np.uint16)
 
     for dist, sID, tID in zip(nn_distances, nn_locations,
-                               range(target_cells.shape[0])):
+                              range(target_cells.shape[0])):
         if kwargs['debug'] and tID >= 20:
             break
         logger.debug("checking nearest neighbor target cell: %s", tID)
@@ -248,24 +231,24 @@ def computeMetrics(source_cells, target_cells,
 
     results = {}
     if reverse:
-        tpP = np.count_nonzero(cntsSource==1)
-        fpP = np.count_nonzero(cntsSource==0)
+        tpP = np.count_nonzero(cntsSource == 1)
+        fpP = np.count_nonzero(cntsSource == 0)
         # non-split
-        nsP = np.count_nonzero(cntsSource>1)
+        nsP = np.count_nonzero(cntsSource > 1)
 
-        tpGT = np.count_nonzero(cntsTarget==1)
-        fnGT = np.count_nonzero(cntsTarget==0)
+        tpGT = np.count_nonzero(cntsTarget == 1)
+        fnGT = np.count_nonzero(cntsTarget == 0)
 
         results['Num_GT'] = target_cells.shape[0]
         results['Num_Pred'] = source_cells.shape[0]
     else:
-        fnGT = np.count_nonzero(cntsSource==0)
-        tpGT = np.count_nonzero(cntsSource==1)
+        fnGT = np.count_nonzero(cntsSource == 0)
+        tpGT = np.count_nonzero(cntsSource == 1)
         # false-split
-        fsGT = np.count_nonzero(cntsSource>1)
+        fsGT = np.count_nonzero(cntsSource > 1)
 
-        tpP = np.count_nonzero(cntsTarget==1)
-        fpP = np.count_nonzero(cntsTarget!=1)
+        tpP = np.count_nonzero(cntsTarget == 1)
+        fpP = np.count_nonzero(cntsTarget != 1)
 
         results['Num_GT'] = source_cells.shape[0]
         results['Num_Pred'] = target_cells.shape[0]
@@ -297,8 +280,6 @@ def computeMetrics(source_cells, target_cells,
 
 def computeMetricsH(gt_cells, pred_cells,
                     gt_labels, outFn, **kwargs):
-    distance_limit = kwargs.get('distance_limit', 6)
-
     gt_cells_tree = scipy.spatial.cKDTree(gt_cells, leafsize=4)
     nn_distancesP, nn_locationsP = gt_cells_tree.query(pred_cells, k=1)
 
@@ -314,8 +295,6 @@ def computeMetricsH(gt_cells, pred_cells,
         if gtID < gt_cells.shape[0]:
             logger.debug("%s %s %s", dist, gt_cells[gtID],
                          pred_cells[pID])
-            # if within distance and same label
-            # if dist < distance_limit and \
             if gt_labels[int(round(pred_cells[pID][0])),
                          int(round(pred_cells[pID][1])),
                          int(round(pred_cells[pID][2]))] == \
@@ -467,7 +446,9 @@ if __name__ == "__main__":
     parser.add_argument('--res_key', type=str,
                         help='name labeling hdf key')
     parser.add_argument('--gt_file', type=str,
-                        help='path to gt_file (hdf, gt segmentation, required csv companion file with center points of instances)', required=True)
+                        help="path to gt_file (hdf, gt segmentation, "
+                        "required csv companion file with center points of"
+                        "instances)", required=True)
     parser.add_argument('--gt_key', type=str,
                         help='name gt hdf key')
     parser.add_argument('--padding', type=int,
@@ -476,22 +457,30 @@ if __name__ == "__main__":
                         help='output directory', required=True)
     parser.add_argument('--metric', type=str,
                         default="confusion_matrix.AP",
-                        help='check if this metric already has been computed in possibly existing result files')
+                        help="check if this metric already has been computed"
+                        " in possibly existing result files")
     parser.add_argument("--from_scratch",
-                        help="recompute everything (instead of checking if results are already there)",
+                        help="recompute everything (instead of checking if "
+                        "results are already there)",
                         action="store_true")
     parser.add_argument("--detection", type=str,
-                        help="which matching method to use (linear (Hungarian matching), greedy (greedily match both ways), hoefener (preferred, from: Deep learning nuclei detection: A simple approach can deliver state-of-the-art results))",
-                        action="store_true")
+                        help="which matching method to use "
+                        "(linear (Hungarian matching), "
+                        "greedy (greedily match both ways), "
+                        "hoefener (preferred, "
+                        "from: Deep learning nuclei detection: A simple "
+                        "approach can deliver state-of-the-art results))")
     parser.add_argument("--distance_limit",
-                        help="distance limit to match gt and predicted detection (deprecated, only for linear matching)", type=int,
-                        default=10)
+                        help="distance limit to match gt and predicted"
+                        "detection (deprecated, only for linear matching)",
+                        type=int, default=10)
     parser.add_argument("--debug", help="",
                         action="store_true")
     parser.add_argument("--visualize", help="",
                         action="store_true")
     parser.add_argument("--no_sparse",
-                        help="work on segmentation predictions (computes center of mass and uses that as detection)",
+                        help="work on segmentation predictions "
+                        "(computes center of mass and uses that as detection)",
                         dest='sparse',
                         action="store_false")
 
